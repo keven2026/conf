@@ -547,34 +547,43 @@ function TabCadastro({clientes,setClientes,emissores,setEmissores,notify,userRol
 
 
 // ─── CRUZAMENTO NFs (reutilizável) ────────────────────────────
-function cruzarNFs(todasNFs, analitico, clientes, clienteNome) {
+function cruzarNFs(todasNFs, analitico, clientes, clienteNome, dataSessao=null) {
   if (!analitico || !todasNFs.length) return null;
   const clienteSel = clientes.find(c=>c.nome===clienteNome);
   const cnpjsCli = new Set((clienteSel?.cnpjs||[]).map(x=>x.replace(/\D/g,'')));
-  // Nomes alternativos do cliente para fallback quando não tem CNPJ
   const nomesCli = clienteSel ? [clienteNome.toLowerCase()] : [];
 
-  const mapCTE={}, mapCNPJ={}, mapRem={};
+  const mapCTE={}, mapCNPJ={}, mapRem={}, mapData={};
+
+  // Filtra apenas linhas do analítico que pertençam ao mesmo dia da sessão
+  // (se dataSessao informado — formato YYYY-MM-DD ou DD/MM/YYYY)
   analitico.rows.forEach(row=>{
     const nf=normalizeNF(row[AN.NF]), cte=String(row[AN.CTE]||'').trim();
     const cnpj=String(row[AN.CNPJ]||'').replace(/\D/g,'');
     const rem=String(row[AN.REMETENTE]||'').toLowerCase();
-    if(nf){mapCTE[nf]=cte||null; mapCNPJ[nf]=cnpj; mapRem[nf]=rem;}
+    const dataRow=fmtData(row[AN.DATA]); // DD/MM/YYYY ou YYYY-MM-DD
+    if(nf){mapCTE[nf]=cte||null; mapCNPJ[nf]=cnpj; mapRem[nf]=rem; mapData[nf]=dataRow;}
   });
+
   const romSet=new Set(todasNFs); const comCTE=[], semCTE=[];
   todasNFs.forEach(nf=>{
     if(mapCTE.hasOwnProperty(nf)) mapCTE[nf]?comCTE.push({nf,cte:mapCTE[nf]}):semCTE.push({nf});
     else semCTE.push({nf});
   });
 
-  // Fora do romaneio: APENAS NFs do mesmo cliente (por CNPJ obrigatório, fallback por nome)
+  // "Fora do romaneio": CTE emitido do mesmo cliente E do mesmo dia da sessão
   const emitidaSemRomaneio=Object.entries(mapCTE).filter(([nf,cte])=>{
     if(!cte||romSet.has(nf)) return false;
+    // Filtro de data: só considera CTEs do mesmo dia da sessão
+    if(dataSessao) {
+      const dr=mapData[nf]||'';
+      // Normaliza ambos para YYYY-MM-DD para comparar
+      const norm=d=>{if(!d) return '';if(d.includes('-')&&d.indexOf('-')===4) return d.substring(0,10);const p=d.split('/');return p.length===3?`${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`:'';};
+      if(norm(dr)!==norm(dataSessao)) return false;
+    }
     const cnpjNF=mapCNPJ[nf]||'';
     const remNF=mapRem[nf]||'';
-    // Se cliente tem CNPJs cadastrados → filtra por CNPJ
     if(cnpjsCli.size>0) return cnpjsCli.has(cnpjNF);
-    // Fallback: compara nome do remetente
     return nomesCli.some(n=>remNF.includes(n)||n.includes(remNF.split(' ')[0]||'XXXXX'));
   }).map(([nf,cte])=>({nf,cte}));
 
@@ -637,7 +646,7 @@ function TabConferencia({clientes,conferencias,setConferencias,notify,userRole})
     const all=new Set(); sessao.lotes.forEach(l=>l.nfs.forEach(n=>all.add(n))); return [...all];
   },[sessao]);
 
-  const resultadoAtual = useMemo(()=>(!sessao||!analiticoSessao||!todasNFs.length)?null:cruzarNFs(todasNFs,analiticoSessao,clientes,sessao.cliente),[sessao,analiticoSessao,todasNFs,clientes]);
+  const resultadoAtual = useMemo(()=>(!sessao||!analiticoSessao||!todasNFs.length)?null:cruzarNFs(todasNFs,analiticoSessao,clientes,sessao.cliente,sessao.data),[sessao,analiticoSessao,todasNFs,clientes]);
 
   if (viewConf) return <ConferenciaDetalhe conf={viewConf} onBack={()=>setViewConf(null)} userRole={userRole}
     onDelete={async()=>{const u=conferencias.filter(c=>c.id!==viewConf.id);setConferencias(u);await sSet(SK.CONF,u);setViewConf(null);notify('Excluída','success');}}/>;
