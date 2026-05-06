@@ -43,7 +43,8 @@ const DEFAULT_USERS = [{ id:'1', nome:'Administrador', login:'admin', senha:'all
 // ─── HELPERS ───────────────────────────────────────────────────
 function normalizeNF(v) { if (!v) return ''; const p=String(v).match(/\d+/g)||[]; return p.reduce((a,b)=>b.length>a.length?b:a,''); }
 function normalizaCC(v) { if (!v) return ''; const s=v.trim().toUpperCase().split('-')[0]; const n=s.replace(/^C/,'').replace(/\D/g,''); return n?'C'+n:s; }
-function fmtMoeda(v) { return `R$${Number(v||0).toFixed(2)}`; }
+function fmtMoeda(v) { return `R$ ${Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`; }
+function fmtNum(v) { return Number(v||0).toLocaleString('pt-BR'); }
 function fmtData(d) { return d?String(d).substring(0,10):''; }
 function parseF(v) { return parseFloat(String(v||'').replace(',','.')) || 0; }
 function parseI(v) { const n=parseInt(String(v||'').replace(/\D/g,'')); return isNaN(n)?1:n; }
@@ -550,14 +551,33 @@ function cruzarNFs(todasNFs, analitico, clientes, clienteNome) {
   if (!analitico || !todasNFs.length) return null;
   const clienteSel = clientes.find(c=>c.nome===clienteNome);
   const cnpjsCli = new Set((clienteSel?.cnpjs||[]).map(x=>x.replace(/\D/g,'')));
-  const mapCTE={}, mapCNPJ={};
+  // Nomes alternativos do cliente para fallback quando não tem CNPJ
+  const nomesCli = clienteSel ? [clienteNome.toLowerCase()] : [];
+
+  const mapCTE={}, mapCNPJ={}, mapRem={};
   analitico.rows.forEach(row=>{
-    const nf=normalizeNF(row[AN.NF]), cte=String(row[AN.CTE]||'').trim(), cnpj=String(row[AN.CNPJ]||'').replace(/\D/g,'');
-    if(nf){mapCTE[nf]=cte||null; mapCNPJ[nf]=cnpj;}
+    const nf=normalizeNF(row[AN.NF]), cte=String(row[AN.CTE]||'').trim();
+    const cnpj=String(row[AN.CNPJ]||'').replace(/\D/g,'');
+    const rem=String(row[AN.REMETENTE]||'').toLowerCase();
+    if(nf){mapCTE[nf]=cte||null; mapCNPJ[nf]=cnpj; mapRem[nf]=rem;}
   });
   const romSet=new Set(todasNFs); const comCTE=[], semCTE=[];
-  todasNFs.forEach(nf=>{ if(mapCTE.hasOwnProperty(nf)) mapCTE[nf]?comCTE.push({nf,cte:mapCTE[nf]}):semCTE.push({nf}); else semCTE.push({nf}); });
-  const emitidaSemRomaneio=Object.entries(mapCTE).filter(([nf,cte])=>{ if(!cte||romSet.has(nf)) return false; return cnpjsCli.size>0?cnpjsCli.has(mapCNPJ[nf]||''):true; }).map(([nf,cte])=>({nf,cte}));
+  todasNFs.forEach(nf=>{
+    if(mapCTE.hasOwnProperty(nf)) mapCTE[nf]?comCTE.push({nf,cte:mapCTE[nf]}):semCTE.push({nf});
+    else semCTE.push({nf});
+  });
+
+  // Fora do romaneio: APENAS NFs do mesmo cliente (por CNPJ obrigatório, fallback por nome)
+  const emitidaSemRomaneio=Object.entries(mapCTE).filter(([nf,cte])=>{
+    if(!cte||romSet.has(nf)) return false;
+    const cnpjNF=mapCNPJ[nf]||'';
+    const remNF=mapRem[nf]||'';
+    // Se cliente tem CNPJs cadastrados → filtra por CNPJ
+    if(cnpjsCli.size>0) return cnpjsCli.has(cnpjNF);
+    // Fallback: compara nome do remetente
+    return nomesCli.some(n=>remNF.includes(n)||n.includes(remNF.split(' ')[0]||'XXXXX'));
+  }).map(([nf,cte])=>({nf,cte}));
+
   return {comCTE, semCTE, emitidaSemRomaneio};
 }
 
@@ -825,7 +845,7 @@ function TabFechamento({emissores,fechamentos,setFechamentos,notify}) {
       // Substitui se já existe fechamento para o mesmo dia+unidade
       const u=[...fechamentos.filter(x=>!(x.data===data&&x.unidade===unid)),fech];
       setFechamentos(u); await sSet(SK.FECH,u);
-      notify(`✅ Fechamento ${data} ${UL[unid]}: ${resumo.ctes} CTEs · ${resumo.vol} vol · R$${resumo.frete.toFixed(0)}`,'success');
+      notify(`✅ Fechamento ${data} ${UL[unid]}: ${fmtNum(resumo.ctes)} CTEs · ${fmtNum(resumo.vol)} vol · ${fmtMoeda(resumo.frete)}`,'success');
     } catch(err){notify('Erro: '+err.message,'error');}
     finally{setLoading(false);}
   }
@@ -862,7 +882,7 @@ function TabFechamento({emissores,fechamentos,setFechamentos,notify}) {
               <td className="py-2 px-4 text-right text-blue-400 text-xs font-semibold">{f.resumo.ctes}</td>
               <td className="py-2 px-4 text-right text-slate-300 text-xs">{f.resumo.vol}</td>
               <td className="py-2 px-4 text-right text-emerald-400 text-xs">{fmtMoeda(f.resumo.frete)}</td>
-              <td className="py-2 px-4 text-right text-slate-300 text-xs">{f.resumo.peso.toFixed(1)}kg</td>
+              <td className="py-2 px-4 text-right text-slate-300 text-xs">{fmtNum(Math.round(f.resumo.peso))}kg</td>
               <td className="py-2 px-4 text-slate-500 text-xs truncate max-w-[120px]">{f.arquivo}</td>
               <td className="py-2 px-4"><button onClick={()=>delFech(f.id)} className="text-red-400 hover:text-red-300 text-xs">🗑</button></td>
             </tr>)}
@@ -919,7 +939,7 @@ function TabAuditoria({clientes,emissores,analiticoUnid,setAnaliticoUnid,comissa
         if (cli&&(cli.contasCorrente||[]).length>0&&conta&&!(cli.contasCorrente||[]).map(normalizaCC).includes(contaNorm)) add({...ctx,tipo:'CC NÃO CADASTRADA',cliente:cli.nome,detalhe:`CC "${conta}" (${contaNorm}) não cadastrada. Cadastradas: ${(cli.contasCorrente||[]).map(normalizaCC).join(', ')}`,sev:'error'});
         if (cli&&(cli.cnpjs||[]).length>0&&cnpj&&!(cli.cnpjs||[]).some(x=>x===cnpj)) add({...ctx,tipo:'CNPJ NÃO CADASTRADO',cliente:cli.nome,detalhe:`CNPJ ${cnpj}`,sev:'warning'});
         if (frete>thFrete) add({...ctx,tipo:'FRETE ALTO',cliente:cli?.nome||remetente,detalhe:`${fmtMoeda(frete)} (limite ${fmtMoeda(thFrete)})`,sev:'warning'});
-        if (peso/vol>thPV) add({...ctx,tipo:'PESO/VOL ALTO',cliente:cli?.nome||remetente,detalhe:`${peso.toFixed(1)}kg/${vol}vol=${(peso/vol).toFixed(1)} (limite ${thPV})`,sev:'warning'});
+        if (peso/vol>thPV) add({...ctx,tipo:'PESO/VOL ALTO',cliente:cli?.nome||remetente,detalhe:`${fmtNum(Math.round(peso))}kg/${fmtNum(vol)}vol = ${(peso/vol).toFixed(1)}kg/vol (limite ${thPV})`,sev:'warning'});
       });
     });
     UNIDS.forEach(u=>{
@@ -1049,17 +1069,25 @@ function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos}) {
 
   const dados=useMemo(()=>{
     const rows=[];
-    UNIDS.forEach(u=>{const an=analiticoUnid[u];if(!an) return;an.rows.forEach(row=>{const cte=String(row[AN.CTE]||'').trim();if(!cte) return;rows.push({cte,data:fmtData(row[AN.DATA]),remetente:String(row[AN.REMETENTE]||'').trim(),operador:String(row[AN.OPERADOR]||'').trim(),frete:parseF(row[AN.FRETE]),peso:parseF(row[AN.PESO]),vol:Math.max(1,parseI(row[AN.VOL])),unidade:u});});});
+    UNIDS.forEach(u=>{const an=analiticoUnid[u];if(!an) return;an.rows.forEach(row=>{const cte=String(row[AN.CTE]||'').trim();if(!cte) return;rows.push({cte,data:fmtData(row[AN.DATA]),remetente:String(row[AN.REMETENTE]||'').trim(),operador:String(row[AN.OPERADOR]||'').trim(),frete:parseF(row[AN.FRETE]),peso:parseF(row[AN.PESO]),vol:Math.max(1,parseI(row[AN.VOL])),cnpj:String(row[AN.CNPJ]||'').replace(/\D/g,''),unidade:u});});});
     const hoje=new Date();const cutoff=new Date(hoje);
     if(periodo==='7d') cutoff.setDate(hoje.getDate()-7);else if(periodo==='30d') cutoff.setDate(hoje.getDate()-30);else if(periodo==='90d') cutoff.setDate(hoje.getDate()-90);
     const rowsF=periodo==='all'?rows:rows.filter(r=>{if(!r.data) return false;const p=r.data.split('/');if(p.length<3) return true;return new Date(p[2],p[1]-1,p[0])>=cutoff;});
     const byDay={};rowsF.forEach(r=>{if(!r.data) return;if(!byDay[r.data]) byDay[r.data]={data:r.data,ctes:0,vol:0,frete:0};byDay[r.data].ctes++;byDay[r.data].vol+=r.vol;byDay[r.data].frete+=r.frete;});
     const dias=Object.values(byDay).sort((a,b)=>a.data.localeCompare(b.data));
     const byWeek={};rows.forEach(r=>{if(!r.data) return;const p=r.data.split('/');if(p.length<3) return;const d=new Date(p[2],p[1]-1,p[0]);const w=`${d.getFullYear()}-W${String(Math.ceil(((d-new Date(d.getFullYear(),0,1))/86400000+1)/7)).padStart(2,'0')}`;if(!byWeek[w]) byWeek[w]={week:w,ctes:0,vol:0};byWeek[w].ctes++;byWeek[w].vol+=r.vol;});
-    const semanas=Object.values(byWeek).sort((a,b)=>a.week.localeCompare(b.week)).slice(-12);
     const byOp={};rowsF.forEach(r=>{const k=r.operador||'?';if(!byOp[k]) byOp[k]={id:k,nome:eName(k),ctes:0,vol:0,frete:0};byOp[k].ctes++;byOp[k].vol+=r.vol;byOp[k].frete+=r.frete;});
     const topOp=Object.values(byOp).sort((a,b)=>b.ctes-a.ctes).slice(0,10);
-    const byCli={};rowsF.forEach(r=>{const k=r.remetente||'?';if(!byCli[k]) byCli[k]={nome:k,ctes:0,vol:0,frete:0,peso:0};byCli[k].ctes++;byCli[k].vol+=r.vol;byCli[k].frete+=r.frete;byCli[k].peso+=r.peso;});
+    // Ranking clientes — agrupa por CNPJ (usa nome do cadastro se encontrar)
+    const byCli={};
+    rowsF.forEach(r=>{
+      const cnpjRow=String(r.cnpj||'').replace(/\D/g,'');
+      const cliCad=clientes.find(c=>(c.cnpjs||[]).some(x=>x===cnpjRow));
+      // Chave: CNPJ limpo se cadastrado, senão nome do remetente
+      const k=cliCad?`cnpj:${cnpjRow}`:`nome:${r.remetente||'?'}`;
+      if(!byCli[k]) byCli[k]={nome:cliCad?cliCad.nome:(r.remetente||'?'),cnpj:cnpjRow,ctes:0,vol:0,frete:0,peso:0,cadastrado:!!cliCad};
+      byCli[k].ctes++;byCli[k].vol+=r.vol;byCli[k].frete+=r.frete;byCli[k].peso+=r.peso;
+    });
     const topCli=Object.values(byCli).sort((a,b)=>b.ctes-a.ctes).slice(0,15);
     const pesosA=rowsF.filter(r=>r.peso/r.vol>thPD).sort((a,b)=>(b.peso/b.vol)-(a.peso/a.vol)).slice(0,50);
     const fretesA=rowsF.filter(r=>r.frete>thFD).sort((a,b)=>b.frete-a.frete).slice(0,50);
@@ -1067,15 +1095,26 @@ function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos}) {
     const allD=Object.values(byDay).sort((a,b)=>a.data.localeCompare(b.data));
     const ctesH=allD[allD.length-1]?.ctes||0,ctesO=allD[allD.length-2]?.ctes||0;
     const varDia=ctesO>0?((ctesH-ctesO)/ctesO*100).toFixed(1):0;
-    // Conferências agrupadas por dia
-    const confD={};conferencias.forEach(c=>{const k=c.data;if(!confD[k]) confD[k]={data:k,lancamentos:0,totalNFs:0,semCTE:0,foraRom:0,clientes:new Set()};confD[k].lancamentos++;confD[k].totalNFs+=c.nfsRomaneio.length;confD[k].semCTE+=c.resultado.semCTE.length;confD[k].foraRom+=c.resultado.emitidaSemRomaneio.length;confD[k].clientes.add(c.cliente);});
+    // Mescla fechamentos históricos com analítico atual
+    const byDayFech={};
+    (fechamentos||[]).forEach(f=>{ if(!byDayFech[f.data]) byDayFech[f.data]={data:f.data,ctes:0,vol:0,frete:0}; byDayFech[f.data].ctes+=f.resumo.ctes;byDayFech[f.data].vol+=f.resumo.vol;byDayFech[f.data].frete+=f.resumo.frete; });
+    // analítico atual sobrescreve fechamento do mesmo dia
+    const diasMerged=Object.values({...byDayFech,...byDay}).sort((a,b)=>a.data.localeCompare(b.data));
+    // Semanas dos fechamentos + analítico
+    (fechamentos||[]).forEach(f=>{const p=f.data.split(/[-\/]/);if(p.length<3) return;const d=new Date(p[0].length===4?f.data:p.reverse().join('-'));if(isNaN(d)) return;const w=`${d.getFullYear()}-W${String(Math.ceil(((d-new Date(d.getFullYear(),0,1))/86400000+1)/7)).padStart(2,'0')}`;if(!byWeek[w]) byWeek[w]={week:w,ctes:0,vol:0};byWeek[w].ctes+=f.resumo.ctes;byWeek[w].vol+=f.resumo.vol;});
+    const semanas=Object.values(byWeek).sort((a,b)=>a.week.localeCompare(b.week)).slice(-12);
+    // Conferências
+    const confD={};conferencias.forEach(c=>{const k=c.data;if(!confD[k]) confD[k]={data:k,lancamentos:0,totalNFs:0,semCTE:0,foraRom:0,clientes:new Set()};confD[k].lancamentos++;confD[k].totalNFs+=(c.nfsRomaneio?.length||0);confD[k].semCTE+=(c.resultado?.semCTE?.length||0);confD[k].foraRom+=(c.resultado?.emitidaSemRomaneio?.length||0);confD[k].clientes.add(c.cliente);});
     const confDias=Object.values(confD).map(d=>({...d,clientes:[...d.clientes]})).sort((a,b)=>b.data.localeCompare(a.data));
-    // Stats de conferências
     const totalConfs=conferencias.length;
-    const totalPend=conferencias.reduce((s,c)=>s+c.resultado.semCTE.length,0);
-    const totalFora=conferencias.reduce((s,c)=>s+c.resultado.emitidaSemRomaneio.length,0);
-    return {dias,semanas,topOp,topCli,pesosA,fretesA,confDias,totalCTEs,totalVol,totalFrete,ctesH,ctesO,varDia,totalConfs,totalPend,totalFora};
-  },[analiticoUnid,periodo,thFD,thPD,emissores,conferencias]);
+    const totalPend=conferencias.reduce((s,c)=>s+(c.resultado?.semCTE?.length||0),0);
+    const totalFora=conferencias.reduce((s,c)=>s+(c.resultado?.emitidaSemRomaneio?.length||0),0);
+    const histCtesTotal=(fechamentos||[]).reduce((s,f)=>s+f.resumo.ctes,0);
+    const allDM=diasMerged;
+    const ctesHf=allDM[allDM.length-1]?.ctes||0,ctesOf=allDM[allDM.length-2]?.ctes||0;
+    const varDiaf=ctesOf>0?((ctesHf-ctesOf)/ctesOf*100).toFixed(1):varDia;
+    return {dias:diasMerged,semanas,topOp,topCli,pesosA,fretesA,confDias,totalCTEs,totalVol,totalFrete,ctesH:ctesHf,ctesO:ctesOf,varDia:varDiaf,totalConfs,totalPend,totalFora,histCtesTotal};
+  },[analiticoUnid,periodo,thFD,thPD,emissores,conferencias,fechamentos]);
 
   // Conferências filtradas
   const confFilt=useMemo(()=>conferencias.filter(c=>(!filtConfCli||c.cliente===filtConfCli)&&(!filtConfDt||c.data===filtConfDt)),[conferencias,filtConfCli,filtConfDt]);
@@ -1086,9 +1125,9 @@ function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos}) {
     {/* KPIs conferência sempre visíveis */}
     {conferencias.length>0&&<>
       <div className="grid grid-cols-3 gap-3">
-        <Stat label="Conferências" value={dados.totalConfs} color="blue"/>
-        <Stat label="NFs pendentes" value={dados.totalPend} color="red" sub="sem emissão"/>
-        <Stat label="Fora romaneio" value={dados.totalFora} color="yellow"/>
+        <Stat label="Conferências" value={fmtNum(dados.totalConfs)} color="blue"/>
+        <Stat label="NFs pendentes" value={fmtNum(dados.totalPend)} color="red" sub="sem emissão"/>
+        <Stat label="Fora romaneio" value={fmtNum(dados.totalFora)} color="yellow"/>
       </div>
 
       {/* Conferências salvas — painel permanente */}
@@ -1152,9 +1191,9 @@ function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos}) {
 
     {hasAn&&<>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Stat label="CTEs" value={dados.totalCTEs.toLocaleString('pt-BR')} color="blue"/>
-        <Stat label="Volumes" value={dados.totalVol.toLocaleString('pt-BR')} color="white"/>
-        <Stat label="Faturamento" value={`R$${(dados.totalFrete/1000).toFixed(1)}k`} color="green"/>
+        <Stat label="CTEs" value={fmtNum(dados.totalCTEs)} color="blue"/>
+        <Stat label="Volumes" value={fmtNum(dados.totalVol)} color="white"/>
+        <Stat label="Faturamento" value={dados.totalFrete>=1000?`R$ ${(dados.totalFrete/1000).toLocaleString('pt-BR',{minimumFractionDigits:1,maximumFractionDigits:1})}k`:fmtMoeda(dados.totalFrete)} color="green"/>
         <Stat label="Var. dia" value={`${dados.varDia>0?'+':''}${dados.varDia}%`} color={dados.varDia>=0?'green':'red'} sub={`${dados.ctesH} hoje vs ${dados.ctesO} ontem`}/>
       </div>
       <div className="flex gap-2">
@@ -1167,16 +1206,16 @@ function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos}) {
           <span className="text-xs text-slate-500 w-4 text-right">{i+1}</span>
           <span className="text-sm text-slate-300 w-28 truncate">{e.nome}</span>
           <div className="flex-1 bg-slate-700 rounded-full h-2"><div className="bg-blue-500 h-2 rounded-full" style={{width:`${(e.ctes/maxOp)*100}%`}}/></div>
-          <span className="text-xs text-slate-400 w-32 text-right">{e.ctes} CTEs · {e.vol} vol</span>
+          <span className="text-xs text-slate-400 w-32 text-right">{fmtNum(e.ctes)} CTEs · {fmtNum(e.vol)} vol</span>
         </div>)}
       </div></Card>
       <Card><CH title="Ranking Clientes"/><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-slate-700">{['#','Cliente','CTEs','Vol','Frete','Peso'].map(h=><th key={h} className={`py-3 px-4 text-xs text-slate-500 font-medium ${['#','Cliente'].includes(h)?'text-left':'text-right'}`}>{h}</th>)}</tr></thead>
-      <tbody>{dados.topCli.map((c,i)=><tr key={i} className="border-b border-slate-700/50 hover:bg-slate-700/30"><td className="py-2 px-4 text-slate-500 text-xs">{i+1}</td><td className="py-2 px-4 font-medium text-white text-xs">{c.nome}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{c.ctes}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{c.vol}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{c.frete>0?fmtMoeda(c.frete):'—'}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{c.peso>0?c.peso.toFixed(1)+'kg':'—'}</td></tr>)}</tbody>
+      <tbody>{dados.topCli.map((c,i)=><tr key={i} className="border-b border-slate-700/50 hover:bg-slate-700/30"><td className="py-2 px-4 text-slate-500 text-xs">{i+1}</td><td className="py-2 px-4 font-medium text-white text-xs"><span>{c.nome}</span>{!c.cadastrado&&<span className="ml-1 text-xs text-amber-500" title="Cliente não cadastrado">⚠️</span>}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{fmtNum(c.ctes)}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{fmtNum(c.vol)}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{c.frete>0?fmtMoeda(c.frete):'—'}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{c.peso>0?fmtNum(Math.round(c.peso))+'kg':'—'}</td></tr>)}</tbody>
       </table></div></Card>
       <Card><CH title={`Pesos/Vol Altos (${dados.pesosA.length})`} actions={<div className="flex items-center gap-2"><span className="text-xs text-slate-400">Limite:</span><input type="number" value={thPD} onChange={e=>setThPD(Number(e.target.value))} className="w-14 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-white"/><span className="text-xs text-slate-400">kg/vol</span></div>}/>
       {dados.pesosA.length===0?<div className="p-4"><p className="text-xs text-slate-500">Nenhum acima de {thPD}kg/vol</p></div>:
       <div className="overflow-x-auto max-h-52 overflow-y-auto"><table className="w-full text-xs"><thead className="sticky top-0 bg-slate-800"><tr className="border-b border-slate-700">{['CTE','Remetente','Peso','Vol','kg/vol'].map(h=><th key={h} className={`py-2 px-3 text-slate-500 font-medium ${['Peso','Vol','kg/vol'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}</tr></thead>
-      <tbody>{dados.pesosA.map((r,i)=><tr key={i} className="border-b border-slate-700/30 hover:bg-amber-900/10"><td className="py-1.5 px-3 text-slate-300">{r.cte}</td><td className="py-1.5 px-3 text-white">{r.remetente}</td><td className="py-1.5 px-3 text-right text-slate-300">{r.peso.toFixed(1)}</td><td className="py-1.5 px-3 text-right text-slate-300">{r.vol}</td><td className="py-1.5 px-3 text-right font-semibold text-amber-400">{(r.peso/r.vol).toFixed(1)}</td></tr>)}</tbody>
+      <tbody>{dados.pesosA.map((r,i)=><tr key={i} className="border-b border-slate-700/30 hover:bg-amber-900/10"><td className="py-1.5 px-3 text-slate-300">{r.cte}</td><td className="py-1.5 px-3 text-white">{r.remetente}</td><td className="py-1.5 px-3 text-right text-slate-300">{fmtNum(Math.round(r.peso))}</td><td className="py-1.5 px-3 text-right text-slate-300">{fmtNum(r.vol)}</td><td className="py-1.5 px-3 text-right font-semibold text-amber-400">{(r.peso/r.vol).toFixed(1)}</td></tr>)}</tbody>
       </table></div>}</Card>
     </>}
   </div>;
@@ -1193,15 +1232,16 @@ export default function App() {
   const [analiticoUnid,setAnaliticoUnid]=useState({});
   const [comissaoUnid,setComissaoUnid]=useState({});
   const [users,setUsers]=useState([]);
+  const [fechamentos,setFechamentos]=useState([]);
   const [toast,setToast]=useState(null);
 
   useEffect(()=>{
     const saved=sessionStorage.getItem('all_user');
     if (saved) try{setUser(JSON.parse(saved));}catch{}
     (async()=>{
-      const [c,e,conf,an,co,u]=await Promise.all([sGet(SK.C),sGet(SK.E),sGet(SK.CONF),sGet(SK.AN),sGet(SK.COM),sGet(SK.USERS)]);
+      const [c,e,conf,an,co,u,fech]=await Promise.all([sGet(SK.C),sGet(SK.E),sGet(SK.CONF),sGet(SK.AN),sGet(SK.COM),sGet(SK.USERS),sGet(SK.FECH)]);
       if(c) setClientes(c);if(e) setEmissores(e);if(conf) setConferencias(conf);
-      if(an) setAnaliticoUnid(an);if(co) setComissaoUnid(co);
+      if(an) setAnaliticoUnid(an);if(co) setComissaoUnid(co);if(fech) setFechamentos(fech);
       const finalUsers=u&&u.length?u:DEFAULT_USERS;
       setUsers(finalUsers);if(!u||!u.length) sSet(SK.USERS,DEFAULT_USERS);
     })();
@@ -1216,11 +1256,12 @@ export default function App() {
   const role=user.role||'emissor';
   const TABS=[
     {id:'conferencia',label:'Conferência',icon:'📋'},
+    {id:'fechamento',label:'Fechamento',icon:'📅'},
     {id:'auditoria',label:'Auditoria',icon:'🔍'},
     {id:'dashboard',label:'Dashboard',icon:'📊'},
     {id:'cadastro',label:'Cadastro',icon:'⚙️'},
     ...(canDo(role,'canManageUsers')?[{id:'usuarios',label:'Usuários',icon:'👥'}]:[]),
-  ].filter(t=>hasTab(role,t.id)||t.id==='usuarios'&&canDo(role,'canManageUsers'));
+  ].filter(t=>hasTab(role,t.id)||t.id==='usuarios'&&canDo(role,'canManageUsers')||t.id==='fechamento'&&hasTab(role,'auditoria'));
 
   return <div className="min-h-screen bg-slate-900" style={{fontFamily:'system-ui,sans-serif'}}>
     <Toast msg={toast?.msg} type={toast?.type} onClose={()=>setToast(null)}/>
@@ -1249,8 +1290,9 @@ export default function App() {
     </nav>
     <main className="max-w-5xl mx-auto px-4 py-6">
       {tab==='conferencia'&&<TabConferencia clientes={clientes} conferencias={conferencias} setConferencias={setConferencias} notify={notify} userRole={role}/>}
+      {tab==='fechamento'&&<TabFechamento emissores={emissores} fechamentos={fechamentos} setFechamentos={setFechamentos} notify={notify}/>}
       {tab==='auditoria'&&<TabAuditoria clientes={clientes} emissores={emissores} analiticoUnid={analiticoUnid} setAnaliticoUnid={setAnaliticoUnid} comissaoUnid={comissaoUnid} setComissaoUnid={setComissaoUnid} notify={notify}/>}
-      {tab==='dashboard'&&<TabDashboard emissores={emissores} analiticoUnid={analiticoUnid} conferencias={conferencias}/>}
+      {tab==='dashboard'&&<TabDashboard emissores={emissores} analiticoUnid={analiticoUnid} conferencias={conferencias} fechamentos={fechamentos}/>}
       {tab==='cadastro'&&<TabCadastro clientes={clientes} setClientes={setClientes} emissores={emissores} setEmissores={setEmissores} notify={notify} userRole={role}/>}
       {tab==='usuarios'&&<TabUsuarios users={users} setUsers={setUsers} notify={notify}/>}
     </main>
