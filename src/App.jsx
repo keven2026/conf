@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 // ─── STORAGE ───────────────────────────────────────────────────
-const SK = { C:'all_cli_v2', E:'all_em_v2', CONF:'all_conf_v2', AN:'all_an_v2', COM:'all_com_v2', USERS:'all_users_v1' };
+const SK = { C:'all_cli_v2', E:'all_em_v2', CONF:'all_conf_v2', AN:'all_an_v2', COM:'all_com_v2', USERS:'all_users_v1', FECH:'all_fech_v1' };
 
 const sGet = async k => {
   try {
@@ -486,7 +486,16 @@ function TabCadastro({clientes,setClientes,emissores,setEmissores,notify,userRol
             </div>
             <Btn type="submit" variant="primary" className="w-full">{editIdx!==null?'Atualizar':'+ Adicionar'}</Btn>
           </form>}
-          <SearchBox value={busca} onChange={setBusca} placeholder="Pesquisar cliente por nome ou CNPJ..."/>
+          <div className="flex items-center justify-between">
+            <SearchBox value={busca} onChange={setBusca} placeholder="Pesquisar por nome ou CNPJ..."/>
+          </div>
+          {clientes.length>0&&canDo(userRole,'canDelete')&&<div className="flex gap-2 flex-wrap">
+            <button onClick={togTodos} className="text-xs text-blue-400 hover:text-blue-300 underline">
+              {selecionados.size===clientes.length?'Desmarcar todos':'Selecionar todos'}
+            </button>
+            {selecionados.size>0&&<Btn size="sm" variant="danger" onClick={delSelecionados}>🗑 Excluir {selecionados.size} selecionado(s)</Btn>}
+            {selecionados.size===0&&<span className="text-xs text-slate-500">{clientes.length} clientes cadastrados</span>}
+          </div>}
           <div className="space-y-1 max-h-72 overflow-y-auto">
             {cliFiltrados.length===0&&<p className="text-xs text-slate-500 text-center py-3">{busca?'Nenhum resultado':'Nenhum cliente'}</p>}
             {cliFiltrados.map((c,fi)=>{
@@ -535,30 +544,51 @@ function TabCadastro({clientes,setClientes,emissores,setEmissores,notify,userRol
   </div>;
 }
 
+
+// ─── CRUZAMENTO NFs (reutilizável) ────────────────────────────
+function cruzarNFs(todasNFs, analitico, clientes, clienteNome) {
+  if (!analitico || !todasNFs.length) return null;
+  const clienteSel = clientes.find(c=>c.nome===clienteNome);
+  const cnpjsCli = new Set((clienteSel?.cnpjs||[]).map(x=>x.replace(/\D/g,'')));
+  const mapCTE={}, mapCNPJ={};
+  analitico.rows.forEach(row=>{
+    const nf=normalizeNF(row[AN.NF]), cte=String(row[AN.CTE]||'').trim(), cnpj=String(row[AN.CNPJ]||'').replace(/\D/g,'');
+    if(nf){mapCTE[nf]=cte||null; mapCNPJ[nf]=cnpj;}
+  });
+  const romSet=new Set(todasNFs); const comCTE=[], semCTE=[];
+  todasNFs.forEach(nf=>{ if(mapCTE.hasOwnProperty(nf)) mapCTE[nf]?comCTE.push({nf,cte:mapCTE[nf]}):semCTE.push({nf}); else semCTE.push({nf}); });
+  const emitidaSemRomaneio=Object.entries(mapCTE).filter(([nf,cte])=>{ if(!cte||romSet.has(nf)) return false; return cnpjsCli.size>0?cnpjsCli.has(mapCNPJ[nf]||''):true; }).map(([nf,cte])=>({nf,cte}));
+  return {comCTE, semCTE, emitidaSemRomaneio};
+}
+
 // ═══════════════════════════════════════════════════════════════
-// TAB CONFERÊNCIA
+// TAB CONFERÊNCIA — SESSÃO DIÁRIA
 // ═══════════════════════════════════════════════════════════════
 function ConferenciaDetalhe({conf,onBack,onDelete,userRole}) {
   return <div className="space-y-4">
     <div className="flex gap-3 flex-wrap">
       <button onClick={onBack} className="text-blue-400 hover:text-blue-300 text-sm">← Voltar</button>
-      <Btn size="sm" variant="ghost" onClick={()=>gerarPDF(conf)}>📄 Gerar PDF</Btn>
+      <Btn size="sm" variant="ghost" onClick={()=>gerarPDF(conf)}>📄 PDF</Btn>
       {canDo(userRole,'canDelete')&&<Btn size="sm" variant="danger" onClick={onDelete}>🗑 Excluir</Btn>}
     </div>
     <Card>
       <CH title={conf.cliente} sub={`${conf.data} · ${UL[conf.unidade]||conf.unidade}`}/>
       <div className="p-5 space-y-4">
         <div className="grid grid-cols-3 gap-3">
-          <Stat label="Com CTE" value={conf.resultado.comCTE.length} color="green"/>
-          <Stat label="Sem emissão" value={conf.resultado.semCTE.length} color="red"/>
-          <Stat label="Fora romaneio" value={conf.resultado.emitidaSemRomaneio.length} color="yellow"/>
+          <Stat label="Com CTE" value={conf.resultado?.comCTE?.length||0} color="green"/>
+          <Stat label="Sem emissão" value={conf.resultado?.semCTE?.length||0} color="red"/>
+          <Stat label="Fora romaneio" value={conf.resultado?.emitidaSemRomaneio?.length||0} color="yellow"/>
         </div>
-        {conf.resultado.semCTE.length>0&&<div className="bg-red-900/30 border border-red-800 rounded-lg p-3">
-          <p className="text-xs text-red-400 font-semibold mb-2">❌ Sem emissão ({conf.resultado.semCTE.length}):</p>
+        {conf.lotes?.length>0&&<div>
+          <p className="text-xs text-slate-400 font-medium mb-2">Lotes ({conf.lotes.length}):</p>
+          <div className="space-y-1">{conf.lotes.map((l,i)=><div key={i} className="bg-slate-700/50 rounded-lg px-3 py-1.5 flex justify-between text-xs"><span className="text-slate-300">Lote {i+1} — {l.nfs.length} NFs</span><span className="text-slate-500">{l.hora}</span></div>)}</div>
+        </div>}
+        {conf.resultado?.semCTE?.length>0&&<div className="bg-red-900/30 border border-red-800 rounded-lg p-3">
+          <p className="text-xs text-red-400 font-semibold mb-2">❌ Sem emissão:</p>
           <div className="flex flex-wrap gap-1">{conf.resultado.semCTE.map((x,i)=><span key={i} className="bg-red-900/60 text-red-300 border border-red-700 text-xs rounded px-2 py-0.5">{x.nf}</span>)}</div>
         </div>}
-        {conf.resultado.emitidaSemRomaneio.length>0&&<div className="bg-amber-900/30 border border-amber-800 rounded-lg p-3">
-          <p className="text-xs text-amber-400 font-semibold mb-2">⚠️ Fora do romaneio — mesmo cliente ({conf.resultado.emitidaSemRomaneio.length}):</p>
+        {conf.resultado?.emitidaSemRomaneio?.length>0&&<div className="bg-amber-900/30 border border-amber-800 rounded-lg p-3">
+          <p className="text-xs text-amber-400 font-semibold mb-2">⚠️ Fora do romaneio:</p>
           <div className="max-h-40 overflow-y-auto space-y-0.5">{conf.resultado.emitidaSemRomaneio.map((x,i)=><div key={i} className="text-xs text-amber-300">NF {x.nf} · CTE {x.cte}</div>)}</div>
         </div>}
       </div>
@@ -567,154 +597,174 @@ function ConferenciaDetalhe({conf,onBack,onDelete,userRole}) {
 }
 
 function TabConferencia({clientes,conferencias,setConferencias,notify,userRole}) {
-  const [buscaCli,setBuscaCli]=useState('');
-  const [cli,setCli]=useState('');
-  const [data,setData]=useState(new Date().toISOString().split('T')[0]);
-  const [unid,setUnid]=useState('ES');
-  const [nfTxt,setNfTxt]=useState('');
-  const [nfsRom,setNfsRom]=useState([]);
-  const [analitico,setAnalitico]=useState(null);
-  const [resultado,setResultado]=useState(null);
-  const [step,setStep]=useState(1);
-  const [viewConf,setViewConf]=useState(null);
-  const [filtCli,setFiltCli]=useState('');
-  const [filtDt,setFiltDt]=useState('');
+  const [sessao, setSessao] = useState(null);
+  const [nfTxt, setNfTxt] = useState('');
+  const [editLoteId, setEditLoteId] = useState(null);
+  const [analiticoSessao, setAnaliticoSessao] = useState(null);
+  const [buscaCli, setBuscaCli] = useState('');
+  const [newCli, setNewCli] = useState('');
+  const [newData, setNewData] = useState(new Date().toISOString().split('T')[0]);
+  const [newUnid, setNewUnid] = useState('ES');
+  const [viewConf, setViewConf] = useState(null);
+  const [filtCli, setFiltCli] = useState('');
+  const [filtDt, setFiltDt] = useState('');
 
-  const cliFiltBusca=useMemo(()=>clientes.filter(c=>!buscaCli||c.nome.toLowerCase().includes(buscaCli.toLowerCase())),[clientes,buscaCli]);
+  const cliFilt = useMemo(()=>clientes.filter(c=>!buscaCli||c.nome.toLowerCase().includes(buscaCli.toLowerCase())),[clientes,buscaCli]);
+  const nfCount = [...new Set((nfTxt.match(/\b\d{4,12}\b/g)||[]))].length;
+
+  const todasNFs = useMemo(()=>{
+    if (!sessao) return [];
+    const all=new Set(); sessao.lotes.forEach(l=>l.nfs.forEach(n=>all.add(n))); return [...all];
+  },[sessao]);
+
+  const resultadoAtual = useMemo(()=>(!sessao||!analiticoSessao||!todasNFs.length)?null:cruzarNFs(todasNFs,analiticoSessao,clientes,sessao.cliente),[sessao,analiticoSessao,todasNFs,clientes]);
 
   if (viewConf) return <ConferenciaDetalhe conf={viewConf} onBack={()=>setViewConf(null)} userRole={userRole}
-    onDelete={async()=>{ const u=conferencias.filter(c=>c.id!==viewConf.id);setConferencias(u);await sSet(SK.CONF,u);setViewConf(null);notify('Conferência excluída','success'); }}/>;
+    onDelete={async()=>{const u=conferencias.filter(c=>c.id!==viewConf.id);setConferencias(u);await sSet(SK.CONF,u);setViewConf(null);notify('Excluída','success');}}/>;
 
-  function confirmarNFs() {
-    if (!cli) return notify('Selecione o cliente','warning');
-    if (!nfTxt.trim()) return notify('Cole os números de NF','warning');
-    const nums=(nfTxt.match(/\b\d{4,12}\b/g)||[]).map(normalizeNF);
-    const unique=[...new Set(nums.filter(n=>n.length>=4))];
-    if (!unique.length) return notify('Nenhum número encontrado','error');
-    setNfsRom(unique);notify(`✅ ${unique.length} NFs confirmadas`,'success');setStep(2);
+  function abrirSessao() {
+    if (!newCli) return notify('Selecione o cliente','warning');
+    const existente=conferencias.find(c=>c.cliente===newCli&&c.data===newData&&c.status==='aberta');
+    if (existente){setSessao(existente);notify(`Sessão de ${newCli} reaberta`,'info');return;}
+    setSessao({id:uid(),cliente:newCli,data:newData,unidade:newUnid,lotes:[],status:'aberta',criadaEm:new Date().toISOString()});
+    notify(`Sessão aberta — ${newCli}`,'success');
   }
+
+  function adicionarLote() {
+    if (!nfTxt.trim()) return notify('Cole as NFs','warning');
+    const nfs=[...new Set((nfTxt.match(/\b\d{4,12}\b/g)||[]).map(normalizeNF).filter(n=>n.length>=4))];
+    if (!nfs.length) return notify('Nenhum número encontrado','error');
+    const hora=new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+    const novaSessao=editLoteId
+      ?{...sessao,lotes:sessao.lotes.map(l=>l.id===editLoteId?{...l,nfs,hora:hora+' (ed)'}:l)}
+      :{...sessao,lotes:[...sessao.lotes,{id:uid(),nfs,hora}]};
+    setSessao(novaSessao); setNfTxt(''); setEditLoteId(null);
+    notify(`${editLoteId?'Lote editado':'Lote adicionado'} — ${nfs.length} NFs`,'success');
+  }
+
   async function handleAn(e) {
     const f=e.target.files[0];if(!f) return;
-    try { const d=await readAnalitico(f);setAnalitico(d);notify(`Analítico: ${d.rows.length} linhas`,'success'); }
+    try{const d=await readAnalitico(f);setAnaliticoSessao(d);notify(`Analítico: ${d.rows.length} linhas`,'success');}
     catch(err){notify('Erro: '+err.message,'error');}
   }
-  function cruzar() {
-    if (!nfsRom.length) return notify('Confirme as NFs','warning');
-    if (!analitico) return notify('Carregue o analítico','warning');
 
-    // CNPJs do cliente selecionado para filtrar "fora do romaneio"
-    const clienteSel=clientes.find(c=>c.nome===cli);
-    const cnpjsCliente=new Set((clienteSel?.cnpjs||[]).map(x=>x.replace(/\D/g,'')));
-
-    const mapNFtoCTE={};
-    const mapNFtoCNPJ={};
-    analitico.rows.forEach(row=>{
-      const nf=normalizeNF(row[AN.NF]),cte=String(row[AN.CTE]||'').trim();
-      const cnpj=String(row[AN.CNPJ]||'').replace(/\D/g,'');
-      if(nf){mapNFtoCTE[nf]=cte||null;mapNFtoCNPJ[nf]=cnpj;}
-    });
-    const romSet=new Set(nfsRom);
-    const comCTE=[],semCTE=[];
-    nfsRom.forEach(nf=>{
-      if(mapNFtoCTE.hasOwnProperty(nf)) mapNFtoCTE[nf]?comCTE.push({nf,cte:mapNFtoCTE[nf]}):semCTE.push({nf});
-      else semCTE.push({nf});
-    });
-    // Fora do romaneio: só considera NFs do mesmo cliente (por CNPJ)
-    const emitidaSemRomaneio=Object.entries(mapNFtoCTE).filter(([nf,cte])=>{
-      if (!cte||romSet.has(nf)) return false;
-      // Se tem CNPJs cadastrados, filtra pelo cliente
-      if (cnpjsCliente.size>0) return cnpjsCliente.has(mapNFtoCNPJ[nf]||'');
-      return true; // sem CNPJ cadastrado: inclui tudo
-    }).map(([nf,cte])=>({nf,cte}));
-
-    setResultado({comCTE,semCTE,emitidaSemRomaneio});setStep(3);
+  async function salvarSessao(fechar=false) {
+    if (!sessao) return;
+    const s={...sessao,nfsRomaneio:todasNFs,resultado:resultadoAtual||{comCTE:[],semCTE:[],emitidaSemRomaneio:[]},status:fechar?'fechada':'aberta',atualizadaEm:new Date().toISOString()};
+    const u=conferencias.find(c=>c.id===sessao.id)?conferencias.map(c=>c.id===sessao.id?s:c):[...conferencias,s];
+    setConferencias(u);await sSet(SK.CONF,u);
+    if(fechar){setSessao(null);setAnaliticoSessao(null);setNfTxt('');notify('Sessão fechada!','success');}
+    else notify('Salvo','success');
   }
-  async function salvar() {
-    if (!resultado||!cli) return;
-    const c={id:uid(),cliente:cli,data,unidade:unid,nfsRomaneio:nfsRom,resultado};
-    const u=[...conferencias,c];setConferencias(u);await sSet(SK.CONF,u);
-    notify('Conferência salva!','success');
-    setNfTxt('');setNfsRom([]);setAnalitico(null);setResultado(null);setStep(1);setCli('');setBuscaCli('');
-  }
-  const confFilt=conferencias.filter(c=>(!filtCli||c.cliente===filtCli)&&(!filtDt||c.data===filtDt));
-  const nfCount=[...new Set((nfTxt.match(/\b\d{4,12}\b/g)||[]))].length;
 
+  // ── PAINEL SESSÃO ATIVA ──────────────────────────────────────
+  if (sessao) return <div className="space-y-4">
+    <div className="flex items-start justify-between flex-wrap gap-2">
+      <div>
+        <p className="text-white font-bold text-base">{sessao.cliente}</p>
+        <p className="text-slate-400 text-xs">{sessao.data} · {UL[sessao.unidade]||sessao.unidade} · {todasNFs.length} NFs acumuladas · {sessao.lotes.length} lotes</p>
+      </div>
+      <div className="flex gap-2 flex-wrap">
+        <Btn size="sm" variant="ghost" onClick={()=>{setSessao(null);setAnaliticoSessao(null);setNfTxt('');}}>← Sair</Btn>
+        <Btn size="sm" variant="ghost" onClick={()=>salvarSessao(false)}>💾 Salvar</Btn>
+        {resultadoAtual&&<Btn size="sm" variant="ghost" onClick={()=>gerarPDF({...sessao,nfsRomaneio:todasNFs,resultado:resultadoAtual})}>📄 PDF</Btn>}
+        <Btn size="sm" variant="success" onClick={()=>salvarSessao(true)}>✅ Fechar dia</Btn>
+      </div>
+    </div>
+
+    {resultadoAtual&&<div className="grid grid-cols-3 gap-3">
+      <Stat label="Com CTE ✅" value={resultadoAtual.comCTE.length} color="green"/>
+      <Stat label="Sem emissão ❌" value={resultadoAtual.semCTE.length} color="red"/>
+      <Stat label="Fora romaneio ⚠️" value={resultadoAtual.emitidaSemRomaneio.length} color="yellow"/>
+    </div>}
+    {!resultadoAtual&&todasNFs.length>0&&<div className="bg-blue-900/30 border border-blue-700 rounded-lg p-3 text-xs text-blue-300">ℹ️ {todasNFs.length} NFs acumuladas — carregue o analítico para recruzar.</div>}
+
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Lotes */}
+      <Card>
+        <CH title={`Lotes do dia (${sessao.lotes.length})`} sub="Cada romaneio é um lote — edite ou remova"/>
+        <div className="p-4 space-y-2 max-h-72 overflow-y-auto">
+          {sessao.lotes.length===0&&<p className="text-xs text-slate-500 text-center py-4">Nenhum lote ainda</p>}
+          {sessao.lotes.map((l,i)=><div key={l.id} className={`rounded-xl p-3 space-y-1 border ${editLoteId===l.id?'bg-blue-900/30 border-blue-700':'bg-slate-700/50 border-transparent'}`}>
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-white">Lote {i+1} — {l.nfs.length} NFs</span>
+              <div className="flex gap-2">
+                <span className="text-xs text-slate-500">{l.hora}</span>
+                <button onClick={()=>{setEditLoteId(l.id);setNfTxt(l.nfs.join('\n'));}} className="text-blue-400 text-xs">✏️</button>
+                <button onClick={()=>setSessao(p=>({...p,lotes:p.lotes.filter(x=>x.id!==l.id)}))} className="text-red-400 text-xs">🗑</button>
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 font-mono truncate">{l.nfs.slice(0,6).join(' · ')}{l.nfs.length>6?` +${l.nfs.length-6}`:''}</p>
+          </div>)}
+        </div>
+      </Card>
+
+      {/* Painel lançamento */}
+      <div className="space-y-3">
+        <Card>
+          <CH title={editLoteId?'✏️ Editando Lote':'➕ Novo Lote'} sub="Cole os NFs do romaneio"/>
+          <div className="p-4 space-y-3">
+            <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-2 text-xs text-blue-300 flex justify-between">
+              <span>Fotos → Claude → cole os números aqui</span>
+              <button onClick={()=>navigator.clipboard?.writeText('Liste os números de NF das fotos, um por linha, só dígitos. "1-016659626"→"016659626"').then(()=>notify('Copiado!','success'))} className="text-blue-400 ml-2">📋</button>
+            </div>
+            <textarea value={nfTxt} onChange={e=>setNfTxt(e.target.value)} placeholder={"016659626\n016660131\n..."} rows={6}
+              className="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:ring-2 focus:ring-blue-500 outline-none resize-none font-mono"/>
+            {nfTxt&&<p className="text-xs text-slate-400">{nfCount} NFs</p>}
+            <div className="flex gap-2">
+              <Btn variant="primary" className="flex-1" onClick={adicionarLote}>{editLoteId?'💾 Salvar edição':'+ Adicionar lote'}</Btn>
+              {editLoteId&&<Btn variant="ghost" onClick={()=>{setEditLoteId(null);setNfTxt('');}}>Cancelar</Btn>}
+            </div>
+          </div>
+        </Card>
+        <Card>
+          <CH title="Analítico" sub="Recruza todas as NFs automaticamente"/>
+          <div className="p-4 space-y-2">
+            <FileZone label="Analítico (.xlsx)" accept=".xlsx,.xls" onChange={handleAn}/>
+            {analiticoSessao&&<p className="text-xs text-emerald-400">✅ {analiticoSessao.rows.length} registros</p>}
+          </div>
+        </Card>
+      </div>
+    </div>
+
+    {resultadoAtual?.semCTE?.length>0&&<Card><CH title={`❌ Sem emissão (${resultadoAtual.semCTE.length})`}/><div className="p-4"><div className="flex flex-wrap gap-1">{resultadoAtual.semCTE.map((x,i)=><span key={i} className="bg-red-900/60 text-red-300 border border-red-700 text-xs rounded px-2 py-0.5">{x.nf}</span>)}</div></div></Card>}
+    {resultadoAtual?.emitidaSemRomaneio?.length>0&&<Card><CH title={`⚠️ Emitidas fora do romaneio (${resultadoAtual.emitidaSemRomaneio.length})`}/><div className="p-4 max-h-48 overflow-y-auto space-y-0.5">{resultadoAtual.emitidaSemRomaneio.map((x,i)=><div key={i} className="text-xs text-amber-300">NF {x.nf} · CTE {x.cte}</div>)}</div></Card>}
+  </div>;
+
+  // ── TELA INICIAL ─────────────────────────────────────────────
   return <div className="space-y-5">
+    {conferencias.filter(c=>c.status==='aberta').length>0&&<Card>
+      <CH title="🔴 Sessões em Aberto"/>
+      <div className="p-3 space-y-1.5">
+        {conferencias.filter(c=>c.status==='aberta').map(c=><div key={c.id} onClick={()=>setSessao(c)}
+          className="flex items-center justify-between bg-amber-900/20 border border-amber-800 hover:bg-amber-900/30 rounded-lg px-3 py-2.5 cursor-pointer transition-colors">
+          <div>
+            <p className="text-sm font-medium text-white">{c.cliente} <span className="text-slate-400 font-normal">— {c.data}</span></p>
+            <p className="text-xs text-slate-400">{(c.lotes||[]).length} lotes · {(c.nfsRomaneio||[]).length} NFs</p>
+          </div>
+          <span className="text-amber-400 text-xs font-medium">Continuar →</span>
+        </div>)}
+      </div>
+    </Card>}
+
     <Card>
-      <CH title="Nova Conferência"/>
-      <div className="p-5 space-y-3">
+      <CH title="Abrir Sessão" sub="Uma sessão por cliente/dia — acumula romaneios durante o dia"/>
+      <div className="p-5 space-y-4">
         <div className="grid grid-cols-2 gap-3">
-          <Inp label="Data" type="date" value={data} onChange={e=>setData(e.target.value)}/>
-          <Sel label="Unidade" value={unid} onChange={e=>setUnid(e.target.value)}>
-            {UNIDS.map(u=><option key={u} value={u}>{UL[u]}</option>)}
-          </Sel>
+          <Inp label="Data" type="date" value={newData} onChange={e=>setNewData(e.target.value)}/>
+          <Sel label="Unidade" value={newUnid} onChange={e=>setNewUnid(e.target.value)}>{UNIDS.map(u=><option key={u} value={u}>{UL[u]}</option>)}</Sel>
         </div>
         <div>
           <label className="block text-xs text-slate-400 mb-1 font-medium">Cliente</label>
-          <SearchBox value={buscaCli} onChange={v=>{setBuscaCli(v);if(v!==cli)setCli('');}} placeholder="Pesquisar cliente..."/>
-          {buscaCli&&!cli&&cliFiltBusca.length>0&&<div className="mt-1 bg-slate-700 border border-slate-600 rounded-lg max-h-40 overflow-y-auto">
-            {cliFiltBusca.slice(0,10).map((c,i)=><button key={i} onClick={()=>{setCli(c.nome);setBuscaCli(c.nome);}}
-              className="w-full text-left px-3 py-2 text-sm text-slate-300 hover:bg-slate-600 hover:text-white transition-colors">{c.nome}</button>)}
+          <SearchBox value={buscaCli} onChange={v=>{setBuscaCli(v);if(v!==newCli)setNewCli('');}} placeholder="Pesquisar cliente..."/>
+          {buscaCli&&!newCli&&cliFilt.length>0&&<div className="mt-1 bg-slate-700 border border-slate-600 rounded-lg max-h-40 overflow-y-auto">
+            {cliFilt.slice(0,10).map((c,i)=><button key={i} onClick={()=>{setNewCli(c.nome);setBuscaCli(c.nome);}} className="w-full text-left px-3 py-2 text-sm text-slate-300 hover:bg-slate-600 hover:text-white">{c.nome}</button>)}
           </div>}
-          {cli&&<p className="text-xs text-emerald-400 mt-1">✅ Selecionado: <span className="font-semibold">{cli}</span></p>}
+          {newCli&&<p className="text-xs text-emerald-400 mt-1">✅ <span className="font-semibold">{newCli}</span></p>}
         </div>
+        <Btn variant="primary" className="w-full py-3 text-base" onClick={abrirSessao}>📋 Abrir Painel de Conferência</Btn>
       </div>
     </Card>
-
-    <div className="flex gap-2">
-      {['NFs','Analítico','Resultado'].map((s,i)=><div key={i} className={`px-3 py-1 rounded-full text-xs font-medium border transition-all ${step===i+1?'bg-blue-600 border-blue-600 text-white':step>i+1?'bg-emerald-900/60 border-emerald-700 text-emerald-300':'bg-slate-800 border-slate-600 text-slate-500'}`}>{step>i+1?'✓':i+1}. {s}</div>)}
-    </div>
-
-    <Card>
-      <CH title="Passo 1 — NFs do romaneio" sub="Cole os números retornados pelo Claude"/>
-      <div className="p-5 space-y-3">
-        <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-3 text-xs text-blue-300">
-          <p className="font-semibold mb-1">Como extrair das fotos:</p>
-          <p>1. Nova conversa no Claude · 2. Envie as fotos + mensagem abaixo · 3. Cole aqui</p>
-          <div className="bg-slate-900 rounded p-2 flex justify-between mt-2">
-            <span className="font-mono text-xs">Liste os nºs de NF das fotos, um por linha, só dígitos.</span>
-            <button onClick={()=>navigator.clipboard?.writeText('Liste todos os números de Nota Fiscal visíveis nestas fotos de romaneio. Um por linha, somente dígitos. Para "NF n°: 1-016659626" escreva "016659626". Para "002592596" escreva "002592596".').then(()=>notify('Copiado!','success'))} className="text-blue-400 hover:text-blue-300 ml-2">📋</button>
-          </div>
-        </div>
-        <textarea value={nfTxt} onChange={e=>setNfTxt(e.target.value)} placeholder={"016659626\n016660131\n..."} rows={7}
-          className="w-full bg-slate-900 border border-slate-600 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:ring-2 focus:ring-blue-500 outline-none resize-none font-mono"/>
-        {nfTxt&&<p className="text-xs text-slate-400">{nfCount} NFs detectadas</p>}
-        <Btn variant="primary" className="w-full py-3" onClick={confirmarNFs}>✅ Confirmar NFs ({nfCount})</Btn>
-        {nfsRom.length>0&&<div className="bg-emerald-900/40 border border-emerald-700 rounded-lg p-3"><p className="text-sm font-semibold text-emerald-300">✅ {nfsRom.length} NFs confirmadas</p></div>}
-      </div>
-    </Card>
-
-    {step>=2&&<Card>
-      <CH title="Passo 2 — Analítico"/>
-      <div className="p-5 space-y-3">
-        <FileZone label="Analítico (.xlsx)" accept=".xlsx,.xls" onChange={handleAn}/>
-        {analitico&&<div className="bg-emerald-900/40 border border-emerald-700 rounded-lg p-3"><p className="text-sm text-emerald-300">✅ {analitico.rows.length} registros</p></div>}
-        {analitico&&<Btn variant="success" className="w-full" onClick={cruzar}>⚡ Cruzar NFs × CTEs</Btn>}
-      </div>
-    </Card>}
-
-    {step>=3&&resultado&&<Card>
-      <CH title="Resultado"/>
-      <div className="p-5 space-y-4">
-        <div className="grid grid-cols-3 gap-3">
-          <Stat label="Com CTE" value={resultado.comCTE.length} color="green"/>
-          <Stat label="Sem emissão" value={resultado.semCTE.length} color="red"/>
-          <Stat label="Fora romaneio" value={resultado.emitidaSemRomaneio.length} color="yellow"/>
-        </div>
-        {resultado.semCTE.length>0&&<div className="bg-red-900/30 border border-red-800 rounded-lg p-3">
-          <p className="text-xs text-red-400 font-semibold mb-2">❌ Sem emissão:</p>
-          <div className="flex flex-wrap gap-1">{resultado.semCTE.map((x,i)=><span key={i} className="bg-red-900/60 text-red-300 border border-red-700 text-xs rounded px-2 py-0.5">{x.nf}</span>)}</div>
-        </div>}
-        {resultado.emitidaSemRomaneio.length>0&&<div className="bg-amber-900/30 border border-amber-800 rounded-lg p-3">
-          <p className="text-xs text-amber-400 font-semibold mb-2">⚠️ Fora do romaneio — mesmo cliente:</p>
-          <div className="space-y-0.5 max-h-40 overflow-y-auto">{resultado.emitidaSemRomaneio.map((x,i)=><div key={i} className="text-xs text-amber-300">NF {x.nf} · CTE {x.cte}</div>)}</div>
-        </div>}
-        <div className="flex gap-2">
-          <Btn variant="primary" className="flex-1" onClick={salvar}>💾 Salvar</Btn>
-          <Btn variant="ghost" onClick={()=>gerarPDF({cliente:cli,data,unidade:unid,nfsRomaneio:nfsRom,resultado})}>📄 PDF</Btn>
-        </div>
-      </div>
-    </Card>}
 
     {conferencias.length>0&&<Card>
       <CH title="Histórico" actions={<div className="flex gap-2">
@@ -724,16 +774,100 @@ function TabConferencia({clientes,conferencias,setConferencias,notify,userRole})
         <input type="date" className="bg-slate-700 border border-slate-600 text-xs text-slate-300 rounded px-2 py-1" value={filtDt} onChange={e=>setFiltDt(e.target.value)}/>
       </div>}/>
       <div className="p-3 space-y-1.5 max-h-64 overflow-y-auto">
-        {[...confFilt].reverse().map(c=><div key={c.id} className="flex items-center gap-2 bg-slate-700/50 hover:bg-slate-700 rounded-lg px-3 py-2.5 transition-colors">
-          <div className="flex-1 cursor-pointer" onClick={()=>setViewConf(c)}>
-            <p className="text-sm font-medium text-white">{c.cliente} <span className="text-slate-400 font-normal">— {c.data}</span></p>
-            <p className="text-xs text-slate-400">{UL[c.unidade]||c.unidade} · {c.nfsRomaneio.length} NFs · <span className="text-emerald-400">{c.resultado.comCTE.length} ok</span> · <span className="text-red-400">{c.resultado.semCTE.length} pend</span></p>
+        {[...conferencias.filter(c=>(!filtCli||c.cliente===filtCli)&&(!filtDt||c.data===filtDt))].reverse().map(c=><div key={c.id} className="flex items-center gap-2 bg-slate-700/50 hover:bg-slate-700 rounded-lg px-3 py-2.5 transition-colors">
+          <div className="flex-1 cursor-pointer" onClick={()=>c.status==='aberta'?setSessao(c):setViewConf(c)}>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium text-white">{c.cliente} <span className="text-slate-400 font-normal">— {c.data}</span></p>
+              {c.status==='aberta'&&<span className="text-xs bg-amber-900/60 text-amber-300 border border-amber-700 rounded-full px-2 py-0.5">aberta</span>}
+            </div>
+            <p className="text-xs text-slate-400">{(c.lotes||[]).length} lotes · {(c.nfsRomaneio||[]).length} NFs
+              {c.resultado&&<> · <span className="text-emerald-400">{c.resultado.comCTE?.length||0} ok</span> · <span className="text-red-400">{c.resultado.semCTE?.length||0} pend</span></>}
+            </p>
           </div>
           <div className="flex gap-1 shrink-0">
-            <button onClick={()=>gerarPDF(c)} className="text-slate-400 hover:text-white text-xs px-1" title="PDF">📄</button>
-            {canDo(userRole,'canDelete')&&<button onClick={async()=>{const u=conferencias.filter(x=>x.id!==c.id);setConferencias(u);await sSet(SK.CONF,u);notify('Excluída','success');}} className="text-red-400 hover:text-red-300 text-xs px-1">🗑</button>}
+            {c.resultado&&<button onClick={()=>gerarPDF(c)} className="text-slate-400 hover:text-white text-xs">📄</button>}
+            {canDo(userRole,'canDelete')&&<button onClick={async()=>{const u=conferencias.filter(x=>x.id!==c.id);setConferencias(u);await sSet(SK.CONF,u);notify('Excluída','success');}} className="text-red-400 hover:text-red-300 text-xs">🗑</button>}
           </div>
         </div>)}
+      </div>
+    </Card>}
+  </div>;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// TAB FECHAMENTO DIÁRIO
+// ═══════════════════════════════════════════════════════════════
+function TabFechamento({emissores,fechamentos,setFechamentos,notify}) {
+  const [data,setData]=useState(new Date().toISOString().split('T')[0]);
+  const [unid,setUnid]=useState('ES');
+  const [loading,setLoading]=useState(false);
+
+  async function handleUp(e) {
+    const f=e.target.files[0]; if(!f) return;
+    setLoading(true);
+    try {
+      const d=await readAnalitico(f);
+      // Processa resumo do dia
+      const resumo={ctes:0,vol:0,frete:0,peso:0,porOp:{},porCli:{}};
+      d.rows.forEach(row=>{
+        const cte=String(row[AN.CTE]||'').trim(); if(!cte) return;
+        const vol=Math.max(1,parseI(row[AN.VOL]));
+        const frete=parseF(row[AN.FRETE]);
+        const peso=parseF(row[AN.PESO]);
+        const op=String(row[AN.OPERADOR]||'').trim();
+        const cli=String(row[AN.REMETENTE]||'').trim();
+        resumo.ctes++; resumo.vol+=vol; resumo.frete+=frete; resumo.peso+=peso;
+        if(op){if(!resumo.porOp[op]) resumo.porOp[op]={nome:emissores.find(e=>e.id===op)?.nome||op,ctes:0,vol:0};resumo.porOp[op].ctes++;resumo.porOp[op].vol+=vol;}
+        if(cli){if(!resumo.porCli[cli]) resumo.porCli[cli]={ctes:0,vol:0,frete:0};resumo.porCli[cli].ctes++;resumo.porCli[cli].vol+=vol;resumo.porCli[cli].frete+=frete;}
+      });
+      const fech={id:uid(),data,unidade:unid,arquivo:f.name,resumo,criadoEm:new Date().toISOString()};
+      // Substitui se já existe fechamento para o mesmo dia+unidade
+      const u=[...fechamentos.filter(x=>!(x.data===data&&x.unidade===unid)),fech];
+      setFechamentos(u); await sSet(SK.FECH,u);
+      notify(`✅ Fechamento ${data} ${UL[unid]}: ${resumo.ctes} CTEs · ${resumo.vol} vol · R$${resumo.frete.toFixed(0)}`,'success');
+    } catch(err){notify('Erro: '+err.message,'error');}
+    finally{setLoading(false);}
+  }
+
+  async function delFech(id){const u=fechamentos.filter(x=>x.id!==id);setFechamentos(u);await sSet(SK.FECH,u);}
+
+  return <div className="space-y-5">
+    <Card>
+      <CH title="Lançar Fechamento do Dia" sub="Analítico final do dia — alimenta o Dashboard histórico"/>
+      <div className="p-5 space-y-4">
+        <div className="bg-blue-900/30 border border-blue-800 rounded-lg p-3 text-xs text-blue-300">
+          <p className="font-semibold mb-1">Como funciona:</p>
+          <p>No final do dia, o gestor sobe o analítico consolidado aqui. Os dados são salvos com a data e alimentam os gráficos do Dashboard permanentemente — mesmo quando o analítico for trocado na Auditoria.</p>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Inp label="Data do fechamento" type="date" value={data} onChange={e=>setData(e.target.value)}/>
+          <Sel label="Unidade" value={unid} onChange={e=>setUnid(e.target.value)}>{UNIDS.map(u=><option key={u} value={u}>{UL[u]}</option>)}</Sel>
+        </div>
+        <FileZone label={loading?'Processando...':'Analítico do fechamento (.xlsx)'} accept=".xlsx,.xls" onChange={handleUp}/>
+      </div>
+    </Card>
+
+    {fechamentos.length>0&&<Card>
+      <CH title={`Fechamentos salvos (${fechamentos.length})`} sub="Dados históricos do Dashboard"/>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="border-b border-slate-700">
+            {['Data','Unidade','CTEs','Volumes','Faturamento','Peso','Arquivo',''].map(h=><th key={h} className={`py-3 px-4 text-xs text-slate-500 font-medium ${['CTEs','Volumes','Faturamento','Peso'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {[...fechamentos].sort((a,b)=>b.data.localeCompare(a.data)).map(f=><tr key={f.id} className="border-b border-slate-700/50 hover:bg-slate-700/20">
+              <td className="py-2 px-4 text-white text-xs font-medium">{f.data}</td>
+              <td className="py-2 px-4 text-slate-300 text-xs">{UL[f.unidade]||f.unidade}</td>
+              <td className="py-2 px-4 text-right text-blue-400 text-xs font-semibold">{f.resumo.ctes}</td>
+              <td className="py-2 px-4 text-right text-slate-300 text-xs">{f.resumo.vol}</td>
+              <td className="py-2 px-4 text-right text-emerald-400 text-xs">{fmtMoeda(f.resumo.frete)}</td>
+              <td className="py-2 px-4 text-right text-slate-300 text-xs">{f.resumo.peso.toFixed(1)}kg</td>
+              <td className="py-2 px-4 text-slate-500 text-xs truncate max-w-[120px]">{f.arquivo}</td>
+              <td className="py-2 px-4"><button onClick={()=>delFech(f.id)} className="text-red-400 hover:text-red-300 text-xs">🗑</button></td>
+            </tr>)}
+          </tbody>
+        </table>
       </div>
     </Card>}
   </div>;
@@ -779,8 +913,10 @@ function TabAuditoria({clientes,emissores,analiticoUnid,setAnaliticoUnid,comissa
         const emNome=emissores.find(e=>e.id===operador)?.nome||operador;
         const ctx={unidade:u,cte,operador,emNome};
         const cli=clientes.find(c=>(c.cnpjs||[]).some(x=>x===cnpj)||remetente.includes(c.nome.toLowerCase())||c.nome.toLowerCase().includes(remetente.split(' ')[0]||'XXXXX'));
+        // Normaliza conta dos dois lados para comparar igual
+        const contaNorm = normalizaCC(conta);
         if (conta.toUpperCase().startsWith('F')) add({...ctx,tipo:'CONTA TIPO F',cliente:cli?.nome||cnpj,detalhe:`Conta ${conta}`,sev:'error'});
-        if (cli&&(cli.contasCorrente||[]).length>0&&conta&&!(cli.contasCorrente||[]).includes(conta)) add({...ctx,tipo:'CC NÃO CADASTRADA',cliente:cli.nome,detalhe:`CC "${conta}" não cadastrada. Cadastradas: ${cli.contasCorrente.join(', ')}`,sev:'error'});
+        if (cli&&(cli.contasCorrente||[]).length>0&&conta&&!(cli.contasCorrente||[]).map(normalizaCC).includes(contaNorm)) add({...ctx,tipo:'CC NÃO CADASTRADA',cliente:cli.nome,detalhe:`CC "${conta}" (${contaNorm}) não cadastrada. Cadastradas: ${(cli.contasCorrente||[]).map(normalizaCC).join(', ')}`,sev:'error'});
         if (cli&&(cli.cnpjs||[]).length>0&&cnpj&&!(cli.cnpjs||[]).some(x=>x===cnpj)) add({...ctx,tipo:'CNPJ NÃO CADASTRADO',cliente:cli.nome,detalhe:`CNPJ ${cnpj}`,sev:'warning'});
         if (frete>thFrete) add({...ctx,tipo:'FRETE ALTO',cliente:cli?.nome||remetente,detalhe:`${fmtMoeda(frete)} (limite ${fmtMoeda(thFrete)})`,sev:'warning'});
         if (peso/vol>thPV) add({...ctx,tipo:'PESO/VOL ALTO',cliente:cli?.nome||remetente,detalhe:`${peso.toFixed(1)}kg/${vol}vol=${(peso/vol).toFixed(1)} (limite ${thPV})`,sev:'warning'});
@@ -902,7 +1038,7 @@ function TabAuditoria({clientes,emissores,analiticoUnid,setAnaliticoUnid,comissa
 // ═══════════════════════════════════════════════════════════════
 // TAB DASHBOARD
 // ═══════════════════════════════════════════════════════════════
-function TabDashboard({emissores,analiticoUnid,conferencias,setTab}) {
+function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos}) {
   const [periodo,setPeriodo]=useState('30d');
   const [thFD,setThFD]=useState(60);
   const [thPD,setThPD]=useState(10);
