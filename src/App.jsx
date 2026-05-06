@@ -1058,7 +1058,7 @@ function TabAuditoria({clientes,emissores,analiticoUnid,setAnaliticoUnid,comissa
 // ═══════════════════════════════════════════════════════════════
 // TAB DASHBOARD
 // ═══════════════════════════════════════════════════════════════
-function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos}) {
+function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos,clientes}) {
   const [periodo,setPeriodo]=useState('30d');
   const [thFD,setThFD]=useState(60);
   const [thPD,setThPD]=useState(10);
@@ -1114,7 +1114,7 @@ function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos}) {
     const ctesHf=allDM[allDM.length-1]?.ctes||0,ctesOf=allDM[allDM.length-2]?.ctes||0;
     const varDiaf=ctesOf>0?((ctesHf-ctesOf)/ctesOf*100).toFixed(1):varDia;
     return {dias:diasMerged,semanas,topOp,topCli,pesosA,fretesA,confDias,totalCTEs,totalVol,totalFrete,ctesH:ctesHf,ctesO:ctesOf,varDia:varDiaf,totalConfs,totalPend,totalFora,histCtesTotal};
-  },[analiticoUnid,periodo,thFD,thPD,emissores,conferencias,fechamentos]);
+  },[analiticoUnid,periodo,thFD,thPD,emissores,conferencias,fechamentos,clientes]);
 
   // Conferências filtradas
   const confFilt=useMemo(()=>conferencias.filter(c=>(!filtConfCli||c.cliente===filtConfCli)&&(!filtConfDt||c.data===filtConfDt)),[conferencias,filtConfCli,filtConfDt]);
@@ -1292,7 +1292,7 @@ export default function App() {
       {tab==='conferencia'&&<TabConferencia clientes={clientes} conferencias={conferencias} setConferencias={setConferencias} notify={notify} userRole={role}/>}
       {tab==='fechamento'&&<TabFechamento emissores={emissores} fechamentos={fechamentos} setFechamentos={setFechamentos} notify={notify}/>}
       {tab==='auditoria'&&<TabAuditoria clientes={clientes} emissores={emissores} analiticoUnid={analiticoUnid} setAnaliticoUnid={setAnaliticoUnid} comissaoUnid={comissaoUnid} setComissaoUnid={setComissaoUnid} notify={notify}/>}
-      {tab==='dashboard'&&<TabDashboard emissores={emissores} analiticoUnid={analiticoUnid} conferencias={conferencias} fechamentos={fechamentos}/>}
+      {tab==='dashboard'&&<TabDashboard emissores={emissores} analiticoUnid={analiticoUnid} conferencias={conferencias} fechamentos={fechamentos} clientes={clientes}/>}
       {tab==='cadastro'&&<TabCadastro clientes={clientes} setClientes={setClientes} emissores={emissores} setEmissores={setEmissores} notify={notify} userRole={role}/>}
       {tab==='usuarios'&&<TabUsuarios users={users} setUsers={setUsers} notify={notify}/>}
     </main>
