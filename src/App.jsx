@@ -26,7 +26,7 @@ const sSet = async (k, v) => {
 };
 
 // ─── ÍNDICES — ANALÍTICO ───────────────────────────────────────
-const AN = { DATA:0, CTE:1, REMETENTE:2, PESO:12, PESO_TAX:13, NF:14, FRETE:15, VOL:24, CONTA:30, CFOP:31, CNPJ:32, OPERADOR:35, UNIDADE:36 };
+const AN = { DATA:0, CTE:1, REMETENTE:2, DESTINATARIO:8, PESO:12, PESO_TAX:13, NF:14, FRETE:15, VOL:24, CONTA:30, CFOP:31, CNPJ:32, OPERADOR:35, UNIDADE:36 };
 const COM = { CTE:0, MODAL:1, DATA:2, TIPO_FRETE:4, PESO:5, CNPJ:6, COLETA:8, EMBALAGEM:10 };
 
 // ─── PERMISSÕES ────────────────────────────────────────────────
@@ -928,63 +928,86 @@ function TabAuditoria({clientes,emissores,analiticoUnid,setAnaliticoUnid,comissa
     if (!clientes.length) return notify('Cadastre clientes primeiro','warning');
     const all=[];
     function add(obj){all.push(obj);}
+
+    // Datas válidas de cada analítico para filtrar comissão
+    const datasPorUnid={};
+    UNIDS.forEach(u=>{ const an=analiticoUnid[u];if(!an) return; datasPorUnid[u]=new Set(an.rows.map(r=>fmtData(r[AN.DATA])).filter(Boolean)); });
+
+    // ── ANALÍTICO ─────────────────────────────────────────────
     UNIDS.forEach(u=>{
       const an=analiticoUnid[u];if(!an) return;
       an.rows.forEach(row=>{
         const cte=String(row[AN.CTE]||'').trim();if(!cte) return;
         const cnpj=String(row[AN.CNPJ]||'').replace(/\D/g,'');
-        const conta=String(row[AN.CONTA]||'').trim();
+        const contaOrig=String(row[AN.CONTA]||'').trim();
+        const conta=normalizaCC(contaOrig);
         const frete=parseF(row[AN.FRETE]);
         const peso=parseF(row[AN.PESO]);
-        const vol=Math.max(1,parseI(row[AN.VOL]));
         const operador=String(row[AN.OPERADOR]||'').trim();
-        const remetente=String(row[AN.REMETENTE]||'').toLowerCase();
-        const emNome=emissores.find(e=>e.id===operador)?.nome||operador;
-        const ctx={unidade:u,cte,operador,emNome};
-        const cli=clientes.find(c=>(c.cnpjs||[]).some(x=>x===cnpj)||remetente.includes(c.nome.toLowerCase())||c.nome.toLowerCase().includes(remetente.split(' ')[0]||'XXXXX'));
-        // Normaliza conta dos dois lados para comparar igual
-        const contaNorm = normalizaCC(conta);
-        if (conta.toUpperCase().startsWith('F')) add({...ctx,tipo:'CONTA TIPO F',cliente:cli?.nome||cnpj,detalhe:`Conta ${conta}`,sev:'error'});
-        if (cli&&(cli.contasCorrente||[]).length>0&&conta&&!(cli.contasCorrente||[]).map(normalizaCC).includes(contaNorm)) add({...ctx,tipo:'CC NÃO CADASTRADA',cliente:cli.nome,detalhe:`CC "${conta}" (${contaNorm}) não cadastrada. Cadastradas: ${(cli.contasCorrente||[]).map(normalizaCC).join(', ')}`,sev:'error'});
-        if (cli&&(cli.cnpjs||[]).length>0&&cnpj&&!(cli.cnpjs||[]).some(x=>x===cnpj)) add({...ctx,tipo:'CNPJ NÃO CADASTRADO',cliente:cli.nome,detalhe:`CNPJ ${cnpj}`,sev:'warning'});
-        if (frete>thFrete) add({...ctx,tipo:'FRETE ALTO',cliente:cli?.nome||remetente,detalhe:`${fmtMoeda(frete)} (limite ${fmtMoeda(thFrete)})`,sev:'warning'});
-        if (peso/vol>thPV) add({...ctx,tipo:'PESO/VOL ALTO',cliente:cli?.nome||remetente,detalhe:`${fmtNum(Math.round(peso))}kg/${fmtNum(vol)}vol = ${(peso/vol).toFixed(1)}kg/vol (limite ${thPV})`,sev:'warning'});
+        const remetente=String(row[AN.REMETENTE]||'').trim();
+        const destinatario=String(row[AN.DESTINATARIO]||'').trim();
+        const emNome=emissores.find(e=>e.id===operador)?.nome||operador||'—';
+        const ctx={unidade:u,cte,operador,emNome,destinatario};
+        const cli=clientes.find(c=>(c.cnpjs||[]).some(x=>x===cnpj)||remetente.toLowerCase().includes(c.nome.toLowerCase())||c.nome.toLowerCase().includes(remetente.split(' ')[0]||'XXXXX'));
+
+        if (contaOrig.toUpperCase().startsWith('F'))
+          add({...ctx,tipo:'CONTA TIPO F',cliente:cli?.nome||remetente,detalhe:`Conta ${contaOrig}`,sev:'error'});
+        if (cli&&(cli.contasCorrente||[]).length>0&&contaOrig&&!(cli.contasCorrente||[]).map(normalizaCC).includes(conta))
+          add({...ctx,tipo:'CC NÃO CADASTRADA',cliente:cli.nome,detalhe:`CC "${contaOrig}" (${conta}) não cadastrada. Cadastradas: ${(cli.contasCorrente||[]).map(normalizaCC).join(', ')}`,sev:'error'});
+        if (cli&&(cli.cnpjs||[]).length>0&&cnpj&&!(cli.cnpjs||[]).some(x=>x===cnpj))
+          add({...ctx,tipo:'CNPJ NÃO CADASTRADO',cliente:cli.nome,detalhe:`CNPJ ${cnpj}`,sev:'warning'});
+        if (frete>thFrete)
+          add({...ctx,tipo:'FRETE ALTO',cliente:cli?.nome||remetente,detalhe:`${fmtMoeda(frete)} (limite ${fmtMoeda(thFrete)})`,sev:'warning'});
+        // Peso bruto — sem dividir por volume
+        if (peso>thPV)
+          add({...ctx,tipo:'PESO ALTO',cliente:cli?.nome||remetente,detalhe:`${fmtNum(Math.round(peso))}kg (limite ${thPV}kg)`,sev:'warning'});
       });
     });
+
+    // ── COMISSÃO — apenas datas que existem no analítico ──────
     UNIDS.forEach(u=>{
       const co=comissaoUnid[u];if(!co) return;
+      const datasValidas=datasPorUnid[u]||new Set();
       co.rows.forEach(row=>{
         const cte=String(row[COM.CTE]||'').trim();if(!cte) return;
+        const dataComissao=fmtData(row[COM.DATA]);
+        if(datasValidas.size>0&&dataComissao&&!datasValidas.has(dataComissao)) return;
         const modal=String(row[COM.MODAL]||'').trim();
         const cnpj=String(row[COM.CNPJ]||'').replace(/\D/g,'');
         const coleta=parseF(row[COM.COLETA]);
         const embal=parseF(row[COM.EMBALAGEM]);
         const tipoFrete=String(row[COM.TIPO_FRETE]||'').trim();
-        const ctx={unidade:u,cte,operador:'—',emNome:'—'};
+        const ctx={unidade:u,cte,operador:'—',emNome:'—',destinatario:'—'};
         const cli=clientes.find(c=>(c.cnpjs||[]).some(x=>x===cnpj));
-        if (cli&&(cli.modalidades||[]).length>0&&modal&&!(cli.modalidades||[]).includes(modal)) add({...ctx,tipo:'MODALIDADE INVÁLIDA',cliente:cli.nome,detalhe:`${modal} não permitida. Permitidas: ${cli.modalidades.join(', ')}`,sev:'error'});
-        if (cli&&parseF(cli.taxaEmbalagem)>0&&embal===0) add({...ctx,tipo:'EMBALAGEM NÃO COBRADA',cliente:cli.nome,detalhe:`Taxa R$${cli.taxaEmbalagem} mas EMBALAGEM=0`,sev:'error'});
-        if (cli&&parseF(cli.taxaColeta)>0&&coleta===0) add({...ctx,tipo:'COLETA NÃO COBRADA',cliente:cli.nome,detalhe:`Taxa R$${cli.taxaColeta} mas COLETA=0`,sev:'error'});
-        if (tipoFrete.toUpperCase().startsWith('F')) add({...ctx,tipo:'TIPO FRETE F',cliente:cli?.nome||cnpj,detalhe:`Tipo "${tipoFrete}"`,sev:'error'});
+        if (cli&&(cli.modalidades||[]).length>0&&modal&&!(cli.modalidades||[]).includes(modal))
+          add({...ctx,tipo:'MODALIDADE INVÁLIDA',cliente:cli.nome,detalhe:`${modal} não permitida. Permitidas: ${cli.modalidades.join(', ')}`,sev:'error'});
+        if (cli&&parseF(cli.taxaEmbalagem)>0&&embal===0)
+          add({...ctx,tipo:'EMBALAGEM NÃO COBRADA',cliente:cli.nome,detalhe:`Taxa R$${cli.taxaEmbalagem} mas EMBALAGEM=0`,sev:'error'});
+        if (cli&&parseF(cli.taxaColeta)>0&&coleta===0)
+          add({...ctx,tipo:'COLETA NÃO COBRADA',cliente:cli.nome,detalhe:`Taxa R$${cli.taxaColeta} mas COLETA=0`,sev:'error'});
+        if (tipoFrete.toUpperCase().startsWith('F'))
+          add({...ctx,tipo:'TIPO FRETE F',cliente:cli?.nome||cnpj,detalhe:`Tipo "${tipoFrete}"`,sev:'error'});
       });
     });
 
-    // ── DUPLICIDADES — mesma NF em mais de um CTE ──────────────
+    // ── DUPLICIDADES ──────────────────────────────────────────
     UNIDS.forEach(u=>{
       const an=analiticoUnid[u];if(!an) return;
       const mapNFtoCTEs={};
       an.rows.forEach(row=>{
-        const nf=normalizeNF(row[AN.NF]);
-        const cte=String(row[AN.CTE]||'').trim();
+        const nf=normalizeNF(row[AN.NF]),cte=String(row[AN.CTE]||'').trim();
         const remetente=String(row[AN.REMETENTE]||'').trim();
+        const destinatario=String(row[AN.DESTINATARIO]||'').trim();
+        const operador=String(row[AN.OPERADOR]||'').trim();
         if(!nf||!cte) return;
-        if(!mapNFtoCTEs[nf]) mapNFtoCTEs[nf]={ctes:[],remetente};
+        if(!mapNFtoCTEs[nf]) mapNFtoCTEs[nf]={ctes:[],remetente,destinatario,operador};
         if(!mapNFtoCTEs[nf].ctes.includes(cte)) mapNFtoCTEs[nf].ctes.push(cte);
       });
-      Object.entries(mapNFtoCTEs).forEach(([nf,{ctes,remetente}])=>{
+      Object.entries(mapNFtoCTEs).forEach(([nf,{ctes,remetente,destinatario,operador}])=>{
         if(ctes.length>1){
+          const emNome=emissores.find(e=>e.id===operador)?.nome||operador||'—';
           const cli=clientes.find(c=>remetente.toLowerCase().includes(c.nome.toLowerCase())||c.nome.toLowerCase().includes(remetente.split(' ')[0]||'XXXXX'));
-          add({unidade:u,cte:ctes.join(' / '),operador:'—',emNome:'—',tipo:'NF DUPLICADA',cliente:cli?.nome||remetente,detalhe:`NF ${nf} aparece em ${ctes.length} CTEs: ${ctes.join(', ')}`,sev:'error'});
+          add({unidade:u,cte:ctes.join(' / '),operador,emNome,destinatario,tipo:'NF DUPLICADA',cliente:cli?.nome||remetente,detalhe:`NF ${nf} em ${ctes.length} CTEs: ${ctes.join(', ')}`,sev:'error'});
         }
       });
     });
@@ -995,7 +1018,7 @@ function TabAuditoria({clientes,emissores,analiticoUnid,setAnaliticoUnid,comissa
   function exportarAlertas() {
     if (!alertas.length) return;
     const wb=XLSX.utils.book_new();
-    const ws=XLSX.utils.aoa_to_sheet([['Tipo','Cliente','Detalhe','CTE','Emissor','Unidade','Severidade'],...alertas.map(a=>[a.tipo,a.cliente,a.detalhe,a.cte,a.emNome,UL[a.unidade]||a.unidade,a.sev])]);
+    const ws=XLSX.utils.aoa_to_sheet([['Tipo','Cliente','Detalhe','CTE','Emissor','Destinatário','Unidade','Severidade'],...alertas.map(a=>[a.tipo,a.cliente,a.detalhe,a.cte,a.emNome,a.destinatario||'—',UL[a.unidade]||a.unidade,a.sev])]);
     XLSX.utils.book_append_sheet(wb,ws,'Alertas');
     XLSX.writeFile(wb,`auditoria_ALL_${new Date().toISOString().split('T')[0]}.xlsx`);
   }
@@ -1010,7 +1033,7 @@ function TabAuditoria({clientes,emissores,analiticoUnid,setAnaliticoUnid,comissa
       <CH title="Parâmetros"/>
       <div className="p-5 grid grid-cols-2 gap-4">
         <div><label className="block text-xs text-slate-400 mb-1">Limite frete alto (R$)</label><input type="number" value={thFrete} onChange={e=>setThFrete(Number(e.target.value))} className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white outline-none focus:ring-2 focus:ring-blue-500"/></div>
-        <div><label className="block text-xs text-slate-400 mb-1">Limite peso/vol (kg)</label><input type="number" value={thPV} onChange={e=>setThPV(Number(e.target.value))} className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white outline-none focus:ring-2 focus:ring-blue-500"/></div>
+        <div><label className="block text-xs text-slate-400 mb-1">Limite peso alto (kg)</label><input type="number" value={thPV} onChange={e=>setThPV(Number(e.target.value))} className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white outline-none focus:ring-2 focus:ring-blue-500"/></div>
       </div>
     </Card>
     <Card>
@@ -1054,7 +1077,7 @@ function TabAuditoria({clientes,emissores,analiticoUnid,setAnaliticoUnid,comissa
               <Badge color={a.sev==='error'?'red':'yellow'}>{a.tipo}</Badge>
               <div className="flex-1"><span className="text-sm font-medium text-white">{a.cliente}</span>
                 <p className="text-xs text-slate-400 mt-0.5">{a.detalhe}</p>
-                <p className="text-xs text-slate-500 mt-0.5">CTE: {a.cte}{a.emNome!=='—'?` · Op: ${a.emNome}`:''} · {UL[a.unidade]||a.unidade}</p>
+                <p className="text-xs text-slate-500 mt-0.5">CTE: {a.cte}{a.emNome&&a.emNome!=='—'?` · Emissor: ${a.emNome}`:''}{a.destinatario&&a.destinatario!=='—'?` · Dest.: ${a.destinatario}`:''} · {UL[a.unidade]||a.unidade}</p>
               </div>
             </div>
           </div>)}
@@ -1098,7 +1121,7 @@ function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos,clientes
       byCli[k].ctes++;byCli[k].vol+=r.vol;byCli[k].frete+=r.frete;byCli[k].peso+=r.peso;
     });
     const topCli=Object.values(byCli).sort((a,b)=>b.ctes-a.ctes).slice(0,15);
-    const pesosA=rowsF.filter(r=>r.peso/r.vol>thPD).sort((a,b)=>(b.peso/b.vol)-(a.peso/a.vol)).slice(0,50);
+    const pesosA=rowsF.filter(r=>r.peso>thPD).sort((a,b)=>b.peso-a.peso).slice(0,50);
     const fretesA=rowsF.filter(r=>r.frete>thFD).sort((a,b)=>b.frete-a.frete).slice(0,50);
     const totalCTEs=rowsF.length,totalVol=rowsF.reduce((s,r)=>s+r.vol,0),totalFrete=rowsF.reduce((s,r)=>s+r.frete,0);
     const allD=Object.values(byDay).sort((a,b)=>a.data.localeCompare(b.data));
@@ -1221,10 +1244,10 @@ function TabDashboard({emissores,analiticoUnid,conferencias,fechamentos,clientes
       <Card><CH title="Ranking Clientes"/><div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-slate-700">{['#','Cliente','CTEs','Vol','Frete','Peso'].map(h=><th key={h} className={`py-3 px-4 text-xs text-slate-500 font-medium ${['#','Cliente'].includes(h)?'text-left':'text-right'}`}>{h}</th>)}</tr></thead>
       <tbody>{dados.topCli.map((c,i)=><tr key={i} className="border-b border-slate-700/50 hover:bg-slate-700/30"><td className="py-2 px-4 text-slate-500 text-xs">{i+1}</td><td className="py-2 px-4 font-medium text-white text-xs"><span>{c.nome}</span>{!c.cadastrado&&<span className="ml-1 text-xs text-amber-500" title="Cliente não cadastrado">⚠️</span>}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{fmtNum(c.ctes)}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{fmtNum(c.vol)}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{c.frete>0?fmtMoeda(c.frete):'—'}</td><td className="py-2 px-4 text-right text-slate-300 text-xs">{c.peso>0?fmtNum(Math.round(c.peso))+'kg':'—'}</td></tr>)}</tbody>
       </table></div></Card>
-      <Card><CH title={`Pesos/Vol Altos (${dados.pesosA.length})`} actions={<div className="flex items-center gap-2"><span className="text-xs text-slate-400">Limite:</span><input type="number" value={thPD} onChange={e=>setThPD(Number(e.target.value))} className="w-14 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-white"/><span className="text-xs text-slate-400">kg/vol</span></div>}/>
-      {dados.pesosA.length===0?<div className="p-4"><p className="text-xs text-slate-500">Nenhum acima de {thPD}kg/vol</p></div>:
-      <div className="overflow-x-auto max-h-52 overflow-y-auto"><table className="w-full text-xs"><thead className="sticky top-0 bg-slate-800"><tr className="border-b border-slate-700">{['CTE','Remetente','Peso','Vol','kg/vol'].map(h=><th key={h} className={`py-2 px-3 text-slate-500 font-medium ${['Peso','Vol','kg/vol'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}</tr></thead>
-      <tbody>{dados.pesosA.map((r,i)=><tr key={i} className="border-b border-slate-700/30 hover:bg-amber-900/10"><td className="py-1.5 px-3 text-slate-300">{r.cte}</td><td className="py-1.5 px-3 text-white">{r.remetente}</td><td className="py-1.5 px-3 text-right text-slate-300">{fmtNum(Math.round(r.peso))}</td><td className="py-1.5 px-3 text-right text-slate-300">{fmtNum(r.vol)}</td><td className="py-1.5 px-3 text-right font-semibold text-amber-400">{(r.peso/r.vol).toFixed(1)}</td></tr>)}</tbody>
+      <Card><CH title={`Pesos Altos (${dados.pesosA.length})`} actions={<div className="flex items-center gap-2"><span className="text-xs text-slate-400">Limite:</span><input type="number" value={thPD} onChange={e=>setThPD(Number(e.target.value))} className="w-14 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-xs text-white"/><span className="text-xs text-slate-400">kg</span></div>}/>
+      {dados.pesosA.length===0?<div className="p-4"><p className="text-xs text-slate-500">Nenhum acima de {thPD}kg</p></div>:
+      <div className="overflow-x-auto max-h-52 overflow-y-auto"><table className="w-full text-xs"><thead className="sticky top-0 bg-slate-800"><tr className="border-b border-slate-700">{['CTE','Remetente','Peso','Vol'].map(h=><th key={h} className={`py-2 px-3 text-slate-500 font-medium ${['Peso','Vol'].includes(h)?'text-right':'text-left'}`}>{h}</th>)}</tr></thead>
+      <tbody>{dados.pesosA.map((r,i)=><tr key={i} className="border-b border-slate-700/30 hover:bg-amber-900/10"><td className="py-1.5 px-3 text-slate-300">{r.cte}</td><td className="py-1.5 px-3 text-white">{r.remetente}</td><td className="py-1.5 px-3 text-right font-semibold text-amber-400">{fmtNum(Math.round(r.peso))}kg</td><td className="py-1.5 px-3 text-right text-slate-300">{fmtNum(r.vol)}</td></tr>)}</tbody>
       </table></div>}</Card>
     </>}
   </div>;
